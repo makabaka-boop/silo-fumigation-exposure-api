@@ -83,6 +83,16 @@ def test_rejects_timestamp_without_milliseconds_or_z_suffix():
     assert error["type"] == "value_error.invalid_timestamp"
 
 
+def test_rejects_full_width_digit_timestamp():
+    payload = BASE_PAYLOAD.copy()
+    readings = [dict(item) for item in BASE_PAYLOAD["readings"]]
+    readings[0]["timestamp"] = "２０２６-０１-０１T００:００:００.０００Z"
+    payload["readings"] = readings
+
+    error = error_for(payload, "readings", 0, "timestamp")
+    assert error["type"] == "value_error.invalid_timestamp"
+
+
 def test_requires_strictly_increasing_timestamps():
     payload = BASE_PAYLOAD.copy()
     readings = [dict(item) for item in BASE_PAYLOAD["readings"]]

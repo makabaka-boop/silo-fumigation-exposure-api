@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+import json
+from decimal import Decimal
+from typing import Any
+
+from fastapi import APIRouter, Request, Response, status
+from fastapi.routing import APIRoute
 
 from app.calculator import verify_joint_request, verify_request
 from app.domain import JointVerificationRequest, VerificationRequest
@@ -12,7 +17,34 @@ from app.schemas import (
     VerificationResponse,
 )
 
-router = APIRouter(tags=["verification"])
+
+class _DecimalJsonRequest(Request):
+    """Request whose JSON body keeps every number's written precision.
+
+    The default float parsing silently drops trailing zeros (``2.0000``
+    becomes ``2.0``), which would hide violations of the
+    at-most-three-decimal-places contract for ``minimum_duration_seconds``.
+    """
+
+    async def json(self) -> Any:
+        if not hasattr(self, "_json"):
+            body = await self.body()
+            self._json = json.loads(body, parse_float=Decimal)
+        return self._json
+
+
+class _DecimalJsonRoute(APIRoute):
+    def get_route_handler(self):
+        original_handler = super().get_route_handler()
+
+        async def handler(request: Request) -> Response:
+            decimal_request = _DecimalJsonRequest(request.scope, request.receive)
+            return await original_handler(decimal_request)
+
+        return handler
+
+
+router = APIRouter(tags=["verification"], route_class=_DecimalJsonRoute)
 
 
 def _interval_response(interval) -> ExposureIntervalResponse:

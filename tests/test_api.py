@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -120,6 +122,28 @@ def test_verify_rejects_malformed_body_with_field_locations():
     assert ("minimum_duration_seconds",) in locations
     assert ("threshold_ppm",) in locations
     assert ("extra_field",) in locations
+
+
+def test_verify_rejects_duration_written_with_four_trailing_decimal_places():
+    raw = json.dumps(payload()).replace(
+        '"minimum_duration_seconds": 2,',
+        '"minimum_duration_seconds": 2.0000,',
+    )
+    assert "2.0000" in raw
+
+    response = client.post(
+        "/verify",
+        content=raw,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"error"}
+    field = body["error"]["fields"][0]
+    assert field["location"] == ["body", "minimum_duration_seconds"]
+    assert field["code"] == "value_error.too_many_decimal_places"
+    assert "qualified" not in body
 
 
 def test_health_check():

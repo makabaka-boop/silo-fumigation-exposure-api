@@ -1,7 +1,11 @@
 import pytest
+from decimal import Decimal
 from pydantic import ValidationError
 
 from app.domain import JointVerificationRequest
+
+
+_FULL_WIDTH_DIGITS = str.maketrans("0123456789", "０１２３４５６７８９")
 
 
 def _readings(*entries: tuple[str, float]) -> list[dict]:
@@ -111,7 +115,7 @@ def test_rejects_non_increasing_timestamps_inside_the_offending_point():
     payload = joint_payload()
     payload["points"][1]["readings"][2]["timestamp"] = "2026-01-01T00:00:01.000Z"
 
-    error = error_for(payload, "points", 1, "readings")
+    error = error_for(payload, "points", 1, "readings", 2, "timestamp")
     assert error["type"] == "value_error.timestamps_not_strictly_increasing"
     assert error["ctx"]["index"] == 2
 
@@ -130,6 +134,88 @@ def test_rejects_bad_timestamp_format_at_the_nested_reading_field():
 
     error = error_for(payload, "points", 0, "readings", 1, "timestamp")
     assert error["type"] == "value_error.invalid_timestamp"
+
+
+def test_rejects_full_width_digit_timestamps_on_every_point():
+    payload = joint_payload()
+    for point in payload["points"]:
+        for reading in point["readings"]:
+            reading["timestamp"] = reading["timestamp"].translate(_FULL_WIDTH_DIGITS)
+
+    with pytest.raises(ValidationError) as exc_info:
+        JointVerificationRequest.model_validate(payload)
+    errors = exc_info.value.errors()
+    assert errors
+    assert all(error["type"] == "value_error.invalid_timestamp" for error in errors)
+    assert errors[0]["loc"] == ("points", 0, "readings", 0, "timestamp")
+
+
+def test_rejects_duration_with_four_trailing_decimal_places():
+    payload = joint_payload(minimum_duration_seconds=Decimal("2.0000"))
+
+    error = error_for(payload, "minimum_duration_seconds")
+    assert error["type"] == "value_error.too_many_decimal_places"
+
+
+def test_locates_last_reading_timestamp_when_it_equals_the_first():
+    payload = joint_payload()
+    payload["points"][1]["readings"][3]["timestamp"] = "2026-01-01T00:00:00.000Z"
+
+    error = error_for(payload, "points", 1, "readings", 3, "timestamp")
+    assert error["type"] == "value_error.timestamps_not_strictly_increasing"
+    assert error["ctx"]["index"] == 3
+
+
+def test_flags_first_point_when_only_its_start_time_is_the_outlier():
+    payload = joint_payload()
+    payload["points"].append(
+        {
+            "point_id": "P-3",
+            "readings": [dict(reading) for reading in payload["points"][1]["readings"]],
+        }
+    )
+    payload["points"][0]["readings"][0]["timestamp"] = "2026-01-01T00:00:00.500Z"
+
+    with pytest.raises(ValidationError) as exc_info:
+        JointVerificationRequest.model_validate(payload)
+    bounds_errors = [
+        error
+        for error in exc_info.value.errors()
+        if error["type"] == "value_error.series_time_bounds_mismatch"
+    ]
+    assert [error["loc"] for error in bounds_errors] == [
+        ("points", 0, "readings", 0, "timestamp")
+    ]
+    assert bounds_errors[0]["ctx"] == {
+        "expected_unix_ms": 1767225600000,
+        "actual_unix_ms": 1767225600500,
+    }
+
+
+def test_flags_first_point_when_only_its_end_time_is_the_outlier():
+    payload = joint_payload()
+    payload["points"].append(
+        {
+            "point_id": "P-3",
+            "readings": [dict(reading) for reading in payload["points"][1]["readings"]],
+        }
+    )
+    payload["points"][0]["readings"][3]["timestamp"] = "2026-01-01T00:00:04.000Z"
+
+    with pytest.raises(ValidationError) as exc_info:
+        JointVerificationRequest.model_validate(payload)
+    bounds_errors = [
+        error
+        for error in exc_info.value.errors()
+        if error["type"] == "value_error.series_time_bounds_mismatch"
+    ]
+    assert [error["loc"] for error in bounds_errors] == [
+        ("points", 0, "readings", 3, "timestamp")
+    ]
+    assert bounds_errors[0]["ctx"] == {
+        "expected_unix_ms": 1767225603000,
+        "actual_unix_ms": 1767225604000,
+    }
 
 
 def test_rejects_blank_point_id():

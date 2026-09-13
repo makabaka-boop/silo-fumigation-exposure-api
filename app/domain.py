@@ -19,8 +19,9 @@ from pydantic import (
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 
+# ASCII digits only: \d would also match full-width digits such as U+FF10.
 _TIMESTAMP_RE = re.compile(
-    r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$"
+    r"^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})\.([0-9]{3})Z$"
 )
 
 
@@ -187,16 +188,22 @@ def _series_span_ms(readings: list[Reading]) -> int:
     return readings[-1].timestamp - readings[0].timestamp
 
 
-def _ensure_strictly_increasing(readings: list[Reading]) -> None:
+def _first_non_increasing_index(readings: list[Reading]) -> int | None:
+    """Index of the first reading not later than its predecessor, if any."""
     previous_timestamp = readings[0].timestamp
     for index in range(1, len(readings)):
         if readings[index].timestamp <= previous_timestamp:
-            raise PydanticCustomError(
-                "value_error.timestamps_not_strictly_increasing",
-                "Readings must be strictly increasing in time.",
-                {"index": index, "timestamp": readings[index].timestamp},
-            )
+            return index
         previous_timestamp = readings[index].timestamp
+    return None
+
+
+def _strictly_increasing_error(readings: list[Reading], index: int) -> PydanticCustomError:
+    return PydanticCustomError(
+        "value_error.timestamps_not_strictly_increasing",
+        "Readings must be strictly increasing in time.",
+        {"index": index, "timestamp": readings[index].timestamp},
+    )
 
 
 def _ensure_span_reaches_minimum_duration(
@@ -244,7 +251,9 @@ class VerificationRequest(BaseModel):
                 "At least two readings are required.",
             )
 
-        _ensure_strictly_increasing(readings)
+        non_increasing_index = _first_non_increasing_index(readings)
+        if non_increasing_index is not None:
+            raise _strictly_increasing_error(readings, non_increasing_index)
 
         minimum_duration = info.data.get("minimum_duration_seconds")
         if minimum_duration is not None:
@@ -291,12 +300,37 @@ class MeasurementSeries(BaseModel):
                 "value_error.too_few_readings",
                 "At least two readings are required.",
             )
-        _ensure_strictly_increasing(readings)
         return readings
+
+    @model_validator(mode="after")
+    def validate_strictly_increasing_timestamps(self) -> "MeasurementSeries":
+        # Raised as a nested ValidationError so the location can point at the
+        # offending reading's timestamp field instead of the whole series.
+        index = _first_non_increasing_index(self.readings)
+        if index is not None:
+            raise ValidationError.from_exception_data(
+                self.__class__.__name__,
+                [
+                    {
+                        "type": _strictly_increasing_error(self.readings, index),
+                        "loc": ("readings", index, "timestamp"),
+                        "input": self.readings[index].timestamp,
+                    }
+                ],
+            )
+        return self
 
     @property
     def span_ms(self) -> int:
         return _series_span_ms(self.readings)
+
+
+def _consensus_timestamp(timestamps: list[int]) -> int:
+    """Timestamp shared by most series; ties keep the earliest point's value."""
+    counts: dict[int, int] = {}
+    for timestamp in timestamps:
+        counts[timestamp] = counts.get(timestamp, 0) + 1
+    return max(counts, key=lambda timestamp: counts[timestamp])
 
 
 class JointVerificationRequest(BaseModel):
@@ -358,32 +392,41 @@ class JointVerificationRequest(BaseModel):
                     }
                 )
 
-        reference = self.points[0]
-        for index, series in enumerate(self.points[1:], start=1):
-            if series.readings[0].timestamp != reference.readings[0].timestamp:
+        # The expected bound is the consensus across all points, so a single
+        # outlier is flagged even when it is the first point in the request.
+        expected_first = _consensus_timestamp(
+            [series.readings[0].timestamp for series in self.points]
+        )
+        expected_last = _consensus_timestamp(
+            [series.readings[-1].timestamp for series in self.points]
+        )
+        for index, series in enumerate(self.points):
+            first_timestamp = series.readings[0].timestamp
+            if first_timestamp != expected_first:
                 errors.append(
                     {
                         "type": PydanticCustomError(
                             "value_error.series_time_bounds_mismatch",
                             "All series must share the same first and last timestamps.",
                             {
-                                "expected_unix_ms": reference.readings[0].timestamp,
-                                "actual_unix_ms": series.readings[0].timestamp,
+                                "expected_unix_ms": expected_first,
+                                "actual_unix_ms": first_timestamp,
                             },
                         ),
                         "loc": ("points", index, "readings", 0, "timestamp"),
-                        "input": series.readings[0].timestamp,
+                        "input": first_timestamp,
                     }
                 )
-            if series.readings[-1].timestamp != reference.readings[-1].timestamp:
+            last_timestamp = series.readings[-1].timestamp
+            if last_timestamp != expected_last:
                 errors.append(
                     {
                         "type": PydanticCustomError(
                             "value_error.series_time_bounds_mismatch",
                             "All series must share the same first and last timestamps.",
                             {
-                                "expected_unix_ms": reference.readings[-1].timestamp,
-                                "actual_unix_ms": series.readings[-1].timestamp,
+                                "expected_unix_ms": expected_last,
+                                "actual_unix_ms": last_timestamp,
                             },
                         ),
                         "loc": (
@@ -393,7 +436,7 @@ class JointVerificationRequest(BaseModel):
                             len(series.readings) - 1,
                             "timestamp",
                         ),
-                        "input": series.readings[-1].timestamp,
+                        "input": last_timestamp,
                     }
                 )
 

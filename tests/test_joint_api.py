@@ -1,9 +1,14 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from app.main import app
 
 
 client = TestClient(app)
+
+
+_FULL_WIDTH_DIGITS = str.maketrans("0123456789", "０１２３４５６７８９")
 
 
 def reading(second: str, concentration: float) -> dict:
@@ -168,6 +173,86 @@ def test_verify_joint_reading_errors_land_on_point_and_reading_field():
     ]
     assert field["code"] == "value_error.negative"
     assert "qualified" not in body
+
+
+def test_verify_joint_rejects_full_width_digit_timestamps():
+    data = joint_payload()
+    for point in data["points"]:
+        for item in point["readings"]:
+            item["timestamp"] = item["timestamp"].translate(_FULL_WIDTH_DIGITS)
+
+    response = client.post("/verify-joint", json=data)
+
+    assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"error"}
+    field = body["error"]["fields"][0]
+    assert field["location"] == ["body", "points", 0, "readings", 0, "timestamp"]
+    assert field["code"] == "value_error.invalid_timestamp"
+    assert "qualified" not in body
+
+
+def test_verify_joint_rejects_four_trailing_decimal_place_duration():
+    raw = json.dumps(joint_payload()).replace(
+        '"minimum_duration_seconds": 2,',
+        '"minimum_duration_seconds": 2.0000,',
+    )
+    assert "2.0000" in raw
+
+    response = client.post(
+        "/verify-joint",
+        content=raw,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"error"}
+    field = body["error"]["fields"][0]
+    assert field["location"] == ["body", "minimum_duration_seconds"]
+    assert field["code"] == "value_error.too_many_decimal_places"
+    assert "qualified" not in body
+
+
+def test_verify_joint_locates_last_reading_timestamp_when_it_equals_the_first():
+    data = joint_payload()
+    data["points"][1]["readings"][3] = reading("00.000", 0)
+
+    response = client.post("/verify-joint", json=data)
+
+    assert response.status_code == 422
+    field = response.json()["error"]["fields"][0]
+    assert field["location"] == ["body", "points", 1, "readings", 3, "timestamp"]
+    assert field["code"] == "value_error.timestamps_not_strictly_increasing"
+
+
+def test_verify_joint_flags_first_point_when_its_start_time_is_the_outlier():
+    data = joint_payload()
+    data["points"].append(
+        {
+            "point_id": "P-3",
+            "readings": [
+                reading("00.000", 0),
+                reading("01.000", 2),
+                reading("02.000", 2),
+                reading("03.000", 0),
+            ],
+        }
+    )
+    data["points"][0]["readings"][0] = reading("00.500", 0)
+
+    response = client.post("/verify-joint", json=data)
+
+    assert response.status_code == 422
+    fields = response.json()["error"]["fields"]
+    assert [field["location"] for field in fields] == [
+        ["body", "points", 0, "readings", 0, "timestamp"]
+    ]
+    assert fields[0]["code"] == "value_error.series_time_bounds_mismatch"
+    assert fields[0]["context"] == {
+        "expected_unix_ms": 1767225600000,
+        "actual_unix_ms": 1767225600500,
+    }
 
 
 def test_verify_joint_requires_two_to_ten_points():
