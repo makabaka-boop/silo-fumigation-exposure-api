@@ -1,18 +1,19 @@
 from decimal import Decimal
 
 from app.calculator import calculate_exposure
-from app.domain import Reading, parse_utc_millisecond_timestamp
+from app.domain import Reading
 
 
 def reading(ts: str, concentration: str) -> Reading:
     return Reading(
-        timestamp=parse_utc_millisecond_timestamp(ts),
+        timestamp=ts,
         concentration_ppm=Decimal(concentration),
     )
 
 
-def test_merges_touching_closed_intervals_without_separate_points():
-    # Both transitions hit threshold at the shared 02.000 reading.
+def test_zero_length_valid_endpoints_inside_a_gap_remain_separate():
+    # The first and third samples equal the threshold, but the sample between
+    # them is below it, so those isolated closed points do not connect.
     readings = [
         reading("2026-01-01T00:00:00.000Z", "2"),
         reading("2026-01-01T00:00:01.000Z", "1"),
@@ -25,6 +26,21 @@ def test_merges_touching_closed_intervals_without_separate_points():
     assert [(interval.start_ms, interval.end_ms) for interval in result.intervals] == [
         (readings[0].timestamp, readings[0].timestamp),
         (readings[2].timestamp, readings[3].timestamp),
+    ]
+    assert result.longest_duration_ms == 1000
+
+
+def test_merges_intervals_touching_at_a_closed_crossing_point():
+    readings = [
+        reading("2026-01-01T00:00:00.000Z", "2"),
+        reading("2026-01-01T00:00:01.000Z", "1"),
+        reading("2026-01-01T00:00:02.000Z", "0"),
+    ]
+
+    result = calculate_exposure(readings, Decimal("1"))
+
+    assert [(interval.start_ms, interval.end_ms) for interval in result.intervals] == [
+        (readings[0].timestamp, readings[1].timestamp),
     ]
     assert result.longest_duration_ms == 1000
 

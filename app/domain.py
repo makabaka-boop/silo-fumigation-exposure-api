@@ -11,10 +11,10 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
-    PydanticCustomError,
     ValidationInfo,
     field_validator,
 )
+from pydantic_core import PydanticCustomError
 
 
 _TIMESTAMP_RE = re.compile(

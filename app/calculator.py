@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
+from fractions import Fraction
 
 from app.domain import Reading, VerificationRequest
 
@@ -26,8 +27,10 @@ class ExposureResult:
     longest_duration_ms: int
 
 
-def _round_half_away_from_zero(value: Decimal) -> int:
-    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+def _round_half_away_from_zero(value: Fraction) -> int:
+    numerator, denominator = abs(value.numerator), value.denominator
+    rounded_absolute = (2 * numerator + denominator) // (2 * denominator)
+    return rounded_absolute if value >= 0 else -rounded_absolute
 
 
 def _crossing_time_ms(
@@ -35,11 +38,12 @@ def _crossing_time_ms(
     right: Reading,
     threshold: Decimal,
 ) -> int:
-    elapsed = Decimal(right.timestamp - left.timestamp)
-    concentration_change = right.concentration_ppm - left.concentration_ppm
-    crossing = Decimal(left.timestamp) + elapsed * (
+    elapsed = right.timestamp - left.timestamp
+    crossing = Fraction(left.timestamp) + Fraction(
         threshold - left.concentration_ppm
-    ) / concentration_change
+    ) / Fraction(right.concentration_ppm - left.concentration_ppm) * Fraction(
+        elapsed
+    )
     return _round_half_away_from_zero(crossing)
 
 

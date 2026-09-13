@@ -24,7 +24,7 @@ async def request_validation_exception_handler(
 ) -> JSONResponse:
     field_errors: list[dict[str, Any]] = []
     for error in exc.errors():
-        location = ["body", *[str(part) for part in error.get("loc", ())[1:]]]
+        location = ["body", *error.get("loc", ())[1:]]
         field_error = {
             "location": location,
             "code": error.get("type", "validation_error"),
