@@ -20,3 +20,13 @@ class VerificationResponse(BaseModel):
     valid_intervals: tuple[ExposureIntervalResponse, ...]
     longest_duration_ms: int
     qualified: bool
+
+
+class JointVerificationResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    warehouse_id: str
+    point_ids: tuple[str, ...]
+    common_valid_intervals: tuple[ExposureIntervalResponse, ...]
+    longest_common_duration_ms: int
+    qualified: bool

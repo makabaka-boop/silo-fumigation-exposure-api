@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 
-from app.domain import Reading, VerificationRequest
+from app.domain import JointVerificationRequest, Reading, VerificationRequest
 
 
 @dataclass(frozen=True)
@@ -115,5 +115,61 @@ def calculate_exposure(
 
 def verify_request(request: VerificationRequest) -> tuple[ExposureResult, bool]:
     result = calculate_exposure(request.readings, request.threshold_ppm)
+    accepted = result.longest_duration_ms >= request.minimum_duration_ms
+    return result, accepted
+
+
+def _intersect_interval_sets(
+    left: tuple[ExposureInterval, ...],
+    right: tuple[ExposureInterval, ...],
+) -> tuple[ExposureInterval, ...]:
+    """Intersect two sorted, merged closed-interval sets (closed endpoints)."""
+
+    intersections: list[ExposureInterval] = []
+    left_index = 0
+    right_index = 0
+    while left_index < len(left) and right_index < len(right):
+        start_ms = max(left[left_index].start_ms, right[right_index].start_ms)
+        end_ms = min(left[left_index].end_ms, right[right_index].end_ms)
+        if start_ms <= end_ms:
+            intersections.append(ExposureInterval(start_ms=start_ms, end_ms=end_ms))
+        if left[left_index].end_ms <= right[right_index].end_ms:
+            left_index += 1
+        else:
+            right_index += 1
+    return tuple(intersections)
+
+
+def calculate_joint_exposure(
+    series_readings: list[list[Reading]], threshold_ppm: Decimal
+) -> ExposureResult:
+    """Intersect every point's closed valid intervals into common intervals."""
+
+    per_point_intervals = [
+        calculate_exposure(readings, threshold_ppm).intervals
+        for readings in series_readings
+    ]
+
+    common = per_point_intervals[0]
+    for intervals in per_point_intervals[1:]:
+        common = _merge_closed_intervals(_intersect_interval_sets(common, intervals))
+
+    longest_duration_ms = max(
+        (interval.duration_ms for interval in common),
+        default=0,
+    )
+    return ExposureResult(
+        intervals=common,
+        longest_duration_ms=longest_duration_ms,
+    )
+
+
+def verify_joint_request(
+    request: JointVerificationRequest,
+) -> tuple[ExposureResult, bool]:
+    result = calculate_joint_exposure(
+        [series.readings for series in request.points],
+        request.threshold_ppm,
+    )
     accepted = result.longest_duration_ms >= request.minimum_duration_ms
     return result, accepted
