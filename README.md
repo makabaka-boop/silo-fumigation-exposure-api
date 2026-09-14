@@ -44,6 +44,46 @@
 longest_duration_ms >= minimum_duration_seconds × 1000
 ```
 
+`POST /verify-conservative`
+
+仪器存在已知测量偏差时的保守口径复核：请求在单测点请求基础上增加非负、有限且最多三位小数的 `measurement_error_ppm`。计算器先从每条读数浓度中扣除该误差上限（扣为负数时下限截为零），再沿用相同的插值、毫秒舍入与连续区间规则。
+
+请求示例：
+
+```json
+{
+  "warehouse_id": "A-01",
+  "threshold_ppm": 0.3,
+  "minimum_duration_seconds": 0.02,
+  "measurement_error_ppm": 0.1,
+  "readings": [
+    {"timestamp": "2026-09-13T08:00:00.000Z", "concentration_ppm": 0.1},
+    {"timestamp": "2026-09-13T08:00:00.010Z", "concentration_ppm": 0.4},
+    {"timestamp": "2026-09-13T08:00:00.030Z", "concentration_ppm": 0.4}
+  ]
+}
+```
+
+成功响应与 `POST /verify` 完全同构（仓号、有效区间、最长持续毫秒数、`qualified`），仅追加回显本次使用的误差上限，原有响应解析无需改造：
+
+```json
+{
+  "warehouse_id": "A-01",
+  "valid_intervals": [
+    {
+      "start_unix_ms": 1789286400010,
+      "end_unix_ms": 1789286400030,
+      "duration_ms": 20
+    }
+  ],
+  "longest_duration_ms": 20,
+  "qualified": true,
+  "measurement_error_ppm": 0.1
+}
+```
+
+误差上限为负数、非有限数或超过三位小数时返回 422，错误定位到 `measurement_error_ppm`，且不产生任何暴露区间或判定。仓号、阈值、持续时长、时间戳与读数的全部校验规则与 `POST /verify` 一致。
+
 `POST /verify-joint`
 
 同一粮仓内两至十个测点的联合复核：各测点读数序列复用单测点的全部校验规则，且首末时间戳必须一致；测点编号在请求内必须唯一。
@@ -108,6 +148,7 @@ longest_common_duration_ms >= minimum_duration_seconds × 1000
 - 读数至少两条，时间戳严格递增，首末跨度不得短于最低持续时间。
 - 浓度和阈值必须为非负有限数。
 - 最低持续秒数必须为大于零的有限数，且最多三位小数。
+- 保守复核的测量误差上限必须为非负有限数，且最多三位小数；判定前从每条浓度扣除并下限截为零。
 - 相邻读数之间按直线插值，浓度等于阈值属于有效。
 - 插值穿越点先换算为 Unix 毫秒值，再四舍五入；半毫秒向远离零方向取整。
 - 原始采样点直接使用其毫秒整数时间。
@@ -146,10 +187,10 @@ pytest
 
 ```text
 app/
-  domain.py      # Pydantic 领域契约与字段级校验（单测点与联合请求）
-  calculator.py  # 不依赖 Web 的插值、区间合并、区间求交与判定计算器
+  domain.py      # Pydantic 领域契约与字段级校验（单测点、保守与联合请求）
+  calculator.py  # 不依赖 Web 的插值、区间合并、区间求交、误差扣减与判定计算器
   schemas.py     # API 响应模型
-  routes.py      # /verify 与 /verify-joint 路由
+  routes.py      # /verify、/verify-conservative 与 /verify-joint 路由
   errors.py      # 路由层校验错误映射
   main.py        # FastAPI 应用入口
 tests/           # 领域、计算器与 API 测试

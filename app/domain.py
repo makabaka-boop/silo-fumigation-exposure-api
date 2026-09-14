@@ -80,6 +80,22 @@ def validate_non_negative_threshold(value: Any) -> Decimal:
     return result
 
 
+def validate_measurement_error(value: Any) -> Decimal:
+    value = _reject_bool(value)
+    result = _parse_finite_decimal(value, field_name="measurement error")
+    if result < 0:
+        raise PydanticCustomError(
+            "value_error.negative",
+            "Measurement error bound must be non-negative.",
+        )
+    if max(0, -result.as_tuple().exponent) > 3:
+        raise PydanticCustomError(
+            "value_error.too_many_decimal_places",
+            "Measurement error bound may have at most three decimal places.",
+        )
+    return result
+
+
 def validate_minimum_duration(value: Any) -> Decimal:
     value = _reject_bool(value)
     result = _parse_finite_decimal(value, field_name="minimum duration")
@@ -166,6 +182,10 @@ NonNegativeConcentration = Annotated[
 NonNegativeThreshold = Annotated[
     Decimal,
     BeforeValidator(validate_non_negative_threshold),
+]
+NonNegativeMeasurementError = Annotated[
+    Decimal,
+    BeforeValidator(validate_measurement_error),
 ]
 PositiveDuration = Annotated[
     Decimal,
@@ -271,6 +291,17 @@ class VerificationRequest(BaseModel):
     @property
     def span_ms(self) -> int:
         return self.readings[-1].timestamp - self.readings[0].timestamp
+
+
+class ConservativeVerificationRequest(VerificationRequest):
+    """Single-point verification under a known measurement error bound.
+
+    Every reading, threshold and timestamp rule is inherited from the plain
+    verification request; the bound itself must be a finite, non-negative
+    number with at most three decimal places.
+    """
+
+    measurement_error_ppm: NonNegativeMeasurementError
 
 
 class MeasurementSeries(BaseModel):

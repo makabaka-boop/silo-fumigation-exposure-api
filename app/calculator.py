@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 
-from app.domain import JointVerificationRequest, Reading, VerificationRequest
+from app.domain import (
+    ConservativeVerificationRequest,
+    JointVerificationRequest,
+    Reading,
+    VerificationRequest,
+)
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,43 @@ def calculate_exposure(
 
 def verify_request(request: VerificationRequest) -> tuple[ExposureResult, bool]:
     result = calculate_exposure(request.readings, request.threshold_ppm)
+    accepted = result.longest_duration_ms >= request.minimum_duration_ms
+    return result, accepted
+
+
+def _readings_after_error_deduction(
+    readings: list[Reading], measurement_error_ppm: Decimal
+) -> list[Reading]:
+    """Lower every concentration by the error bound, clamping at zero."""
+    return [
+        Reading.model_construct(
+            timestamp=reading.timestamp,
+            concentration_ppm=max(Decimal(0), reading.concentration_ppm - measurement_error_ppm),
+        )
+        for reading in readings
+    ]
+
+
+def calculate_conservative_exposure(
+    readings: list[Reading],
+    threshold_ppm: Decimal,
+    measurement_error_ppm: Decimal,
+) -> ExposureResult:
+    """Exposure intervals after deducting the error bound from each reading."""
+    adjusted_readings = _readings_after_error_deduction(
+        readings, measurement_error_ppm
+    )
+    return calculate_exposure(adjusted_readings, threshold_ppm)
+
+
+def verify_conservative_request(
+    request: ConservativeVerificationRequest,
+) -> tuple[ExposureResult, bool]:
+    result = calculate_conservative_exposure(
+        request.readings,
+        request.threshold_ppm,
+        request.measurement_error_ppm,
+    )
     accepted = result.longest_duration_ms >= request.minimum_duration_ms
     return result, accepted
 

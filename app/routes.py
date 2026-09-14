@@ -9,9 +9,18 @@ from typing import Any
 from fastapi import APIRouter, Request, Response, status
 from fastapi.routing import APIRoute
 
-from app.calculator import verify_joint_request, verify_request
-from app.domain import JointVerificationRequest, VerificationRequest
+from app.calculator import (
+    verify_conservative_request,
+    verify_joint_request,
+    verify_request,
+)
+from app.domain import (
+    ConservativeVerificationRequest,
+    JointVerificationRequest,
+    VerificationRequest,
+)
 from app.schemas import (
+    ConservativeVerificationResponse,
     ExposureIntervalResponse,
     JointVerificationResponse,
     VerificationResponse,
@@ -71,6 +80,26 @@ def verify(
         ),
         longest_duration_ms=exposure.longest_duration_ms,
         qualified=qualified,
+    )
+
+
+@router.post(
+    "/verify-conservative",
+    response_model=ConservativeVerificationResponse,
+    status_code=status.HTTP_200_OK,
+)
+def verify_conservative(
+    request: ConservativeVerificationRequest,
+) -> ConservativeVerificationResponse:
+    exposure, qualified = verify_conservative_request(request)
+    return ConservativeVerificationResponse(
+        warehouse_id=request.warehouse_id,
+        valid_intervals=tuple(
+            _interval_response(interval) for interval in exposure.intervals
+        ),
+        longest_duration_ms=exposure.longest_duration_ms,
+        qualified=qualified,
+        measurement_error_ppm=request.measurement_error_ppm,
     )
 
 

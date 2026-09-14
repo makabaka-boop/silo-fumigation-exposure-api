@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 
 class ExposureIntervalResponse(BaseModel):
@@ -20,6 +22,17 @@ class VerificationResponse(BaseModel):
     valid_intervals: tuple[ExposureIntervalResponse, ...]
     longest_duration_ms: int
     qualified: bool
+
+
+class ConservativeVerificationResponse(VerificationResponse):
+    """Same shape as VerificationResponse, plus the conservative bound."""
+
+    measurement_error_ppm: Decimal
+
+    @field_serializer("measurement_error_ppm")
+    def _serialize_measurement_error(self, value: Decimal) -> int | float:
+        # Echo the bound as a JSON number, preserving its written precision.
+        return int(value) if value == value.to_integral_value() else float(value)
 
 
 class JointVerificationResponse(BaseModel):
