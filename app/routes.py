@@ -13,17 +13,20 @@ from app.calculator import (
     verify_conservative_request,
     verify_joint_request,
     verify_request,
+    verify_window_request,
 )
 from app.domain import (
     ConservativeVerificationRequest,
     JointVerificationRequest,
     VerificationRequest,
+    WindowVerificationRequest,
 )
 from app.schemas import (
     ConservativeVerificationResponse,
     ExposureIntervalResponse,
     JointVerificationResponse,
     VerificationResponse,
+    WindowVerificationResponse,
 )
 
 
@@ -120,4 +123,25 @@ def verify_joint(
         ),
         longest_common_duration_ms=exposure.longest_duration_ms,
         qualified=qualified,
+    )
+
+
+@router.post(
+    "/verify-window",
+    response_model=WindowVerificationResponse,
+    status_code=status.HTTP_200_OK,
+)
+def verify_window(
+    request: WindowVerificationRequest,
+) -> WindowVerificationResponse:
+    exposure, qualified = verify_window_request(request)
+    return WindowVerificationResponse(
+        warehouse_id=request.warehouse_id,
+        valid_intervals=tuple(
+            _interval_response(interval) for interval in exposure.intervals
+        ),
+        longest_duration_ms=exposure.longest_duration_ms,
+        qualified=qualified,
+        window_start_unix_ms=request.window_start,
+        window_end_unix_ms=request.window_end,
     )

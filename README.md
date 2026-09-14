@@ -140,6 +140,49 @@ longest_duration_ms >= minimum_duration_seconds × 1000
 longest_common_duration_ms >= minimum_duration_seconds × 1000
 ```
 
+`POST /verify-window`
+
+复核员只认可指定时段时使用：请求在单测点请求基础上增加 `window_start` 与 `window_end`，两者均采用与读数时间戳相同的毫秒 UTC 格式。窗口起点必须早于终点，且两者都必须落在首末读数时间范围内；越界或倒置返回 422，错误定位到对应窗口字段（`window_start` 或 `window_end`），不生成暴露区间或判定。
+
+服务在窗口边界按相邻读数直线插值出虚拟端点（边界恰逢原始采样点时直接复用该读数，不产生重复端点），仅将窗口内读数交给计算器；窗口外的达标时长不参与最长持续时间与 `qualified`。
+
+请求示例：
+
+```json
+{
+  "warehouse_id": "A-01",
+  "threshold_ppm": 1,
+  "minimum_duration_seconds": 2,
+  "window_start": "2026-01-01T00:00:00.250Z",
+  "window_end": "2026-01-01T00:00:02.750Z",
+  "readings": [
+    {"timestamp": "2026-01-01T00:00:00.000Z", "concentration_ppm": 0},
+    {"timestamp": "2026-01-01T00:00:01.000Z", "concentration_ppm": 2},
+    {"timestamp": "2026-01-01T00:00:02.000Z", "concentration_ppm": 2},
+    {"timestamp": "2026-01-01T00:00:03.000Z", "concentration_ppm": 0}
+  ]
+}
+```
+
+成功响应与 `POST /verify` 完全同构，仅追加回显窗口起止的 Unix 毫秒值：
+
+```json
+{
+  "warehouse_id": "A-01",
+  "valid_intervals": [
+    {
+      "start_unix_ms": 1767225600500,
+      "end_unix_ms": 1767225602500,
+      "duration_ms": 2000
+    }
+  ],
+  "longest_duration_ms": 2000,
+  "qualified": true,
+  "window_start_unix_ms": 1767225600250,
+  "window_end_unix_ms": 1767225602750
+}
+```
+
 非法请求返回 HTTP 422，错误位于 `error.fields`，每项提供 `location`、`code`、`message` 和可用的 `context`；校验失败时不会返回任何判定结果。联合请求的嵌套错误会定位到具体测点与读数字段，例如 `["body", "points", 1, "readings", 0, "concentration_ppm"]`。
 
 ## 领域规则
@@ -155,6 +198,9 @@ longest_common_duration_ms >= minimum_duration_seconds × 1000
 - 区间持续毫秒数为 `end_unix_ms - start_unix_ms`。
 - 区间首尾闭合；相接区间合并，分离区间不可相加。
 - 联合复核中每个测点序列遵守以上全部规则；测点编号非空且请求内唯一，测点数为二至十个，各序列首末时间戳必须一致。
+- 窗口复核的起止时间使用与读数相同的毫秒 UTC 格式；起点必须早于终点，且两者均不超出首末读数时间范围，否则按字段级错误返回 422。
+- 窗口边界落在相邻读数之间时按直线插值生成虚拟端点（浓度保持精确分数）；边界恰逢原始采样点时直接复用该读数，不重复插入端点。
+- 仅窗口内的读数与切割点参与区间计算，窗口外的达标时长不计入最长持续时间与 `qualified`。
 
 ## 本地运行（Docker Compose）
 
@@ -187,10 +233,10 @@ pytest
 
 ```text
 app/
-  domain.py      # Pydantic 领域契约与字段级校验（单测点、保守与联合请求）
-  calculator.py  # 不依赖 Web 的插值、区间合并、区间求交、误差扣减与判定计算器
+  domain.py      # Pydantic 领域契约与字段级校验（单测点、保守、联合与窗口请求）
+  calculator.py  # 不依赖 Web 的插值、区间合并、区间求交、误差扣减、窗口切割与判定计算器
   schemas.py     # API 响应模型
-  routes.py      # /verify、/verify-conservative 与 /verify-joint 路由
+  routes.py      # /verify、/verify-conservative、/verify-joint 与 /verify-window 路由
   errors.py      # 路由层校验错误映射
   main.py        # FastAPI 应用入口
 tests/           # 领域、计算器与 API 测试

@@ -304,6 +304,69 @@ class ConservativeVerificationRequest(VerificationRequest):
     measurement_error_ppm: NonNegativeMeasurementError
 
 
+class WindowVerificationRequest(VerificationRequest):
+    """Single-point verification restricted to a reviewer-approved window.
+
+    Every reading, threshold and timestamp rule is inherited from the plain
+    verification request. Both window bounds use the same millisecond UTC
+    format; the start must be earlier than the end and both must lie within
+    the first and last reading timestamps.
+    """
+
+    window_start: UtcMillisecondTimestamp
+    window_end: UtcMillisecondTimestamp
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "WindowVerificationRequest":
+        first_ms = self.readings[0].timestamp
+        last_ms = self.readings[-1].timestamp
+        errors: list[InitErrorDetails] = []
+
+        for field_name, bound_ms in (
+            ("window_start", self.window_start),
+            ("window_end", self.window_end),
+        ):
+            if not first_ms <= bound_ms <= last_ms:
+                errors.append(
+                    {
+                        "type": PydanticCustomError(
+                            "value_error.window_outside_span",
+                            "Window bounds must lie within the first and last "
+                            "reading timestamps.",
+                            {
+                                f"{field_name}_unix_ms": bound_ms,
+                                "first_reading_unix_ms": first_ms,
+                                "last_reading_unix_ms": last_ms,
+                            },
+                        ),
+                        "loc": (field_name,),
+                        "input": bound_ms,
+                    }
+                )
+
+        if self.window_start >= self.window_end:
+            errors.append(
+                {
+                    "type": PydanticCustomError(
+                        "value_error.window_not_ordered",
+                        "Window start must be earlier than window end.",
+                        {
+                            "window_start_unix_ms": self.window_start,
+                            "window_end_unix_ms": self.window_end,
+                        },
+                    ),
+                    "loc": ("window_end",),
+                    "input": self.window_end,
+                }
+            )
+
+        if errors:
+            raise ValidationError.from_exception_data(
+                self.__class__.__name__, errors
+            )
+        return self
+
+
 class MeasurementSeries(BaseModel):
     """One measurement point's strictly increasing reading series."""
 

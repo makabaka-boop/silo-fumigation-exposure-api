@@ -43,3 +43,10 @@ class JointVerificationResponse(BaseModel):
     common_valid_intervals: tuple[ExposureIntervalResponse, ...]
     longest_common_duration_ms: int
     qualified: bool
+
+
+class WindowVerificationResponse(VerificationResponse):
+    """Same shape as VerificationResponse, plus the echoed window bounds."""
+
+    window_start_unix_ms: int
+    window_end_unix_ms: int

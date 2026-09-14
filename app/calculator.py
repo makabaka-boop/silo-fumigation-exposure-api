@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
@@ -11,6 +12,7 @@ from app.domain import (
     JointVerificationRequest,
     Reading,
     VerificationRequest,
+    WindowVerificationRequest,
 )
 
 
@@ -44,11 +46,13 @@ def _crossing_time_ms(
     threshold: Decimal,
 ) -> int:
     elapsed = right.timestamp - left.timestamp
-    crossing = Fraction(left.timestamp) + Fraction(
-        threshold - left.concentration_ppm
-    ) / Fraction(right.concentration_ppm - left.concentration_ppm) * Fraction(
-        elapsed
-    )
+    # Convert each operand separately: interpolated window endpoints carry
+    # exact Fraction concentrations, and Fraction(Decimal) is lossless.
+    crossing = Fraction(left.timestamp) + (
+        Fraction(threshold) - Fraction(left.concentration_ppm)
+    ) / (
+        Fraction(right.concentration_ppm) - Fraction(left.concentration_ppm)
+    ) * Fraction(elapsed)
     return _round_half_away_from_zero(crossing)
 
 
@@ -120,6 +124,89 @@ def calculate_exposure(
 
 def verify_request(request: VerificationRequest) -> tuple[ExposureResult, bool]:
     result = calculate_exposure(request.readings, request.threshold_ppm)
+    accepted = result.longest_duration_ms >= request.minimum_duration_ms
+    return result, accepted
+
+
+def _interpolated_reading(left: Reading, right: Reading, timestamp_ms: int) -> Reading:
+    """Virtual reading exactly on the straight line between two neighbours.
+
+    The concentration stays a Fraction so later crossing maths remains
+    exact; the timestamp is the integer millisecond cut point itself.
+    """
+    elapsed = right.timestamp - left.timestamp
+    offset = timestamp_ms - left.timestamp
+    concentration = Fraction(left.concentration_ppm) + (
+        Fraction(right.concentration_ppm) - Fraction(left.concentration_ppm)
+    ) * Fraction(offset, elapsed)
+    return Reading.model_construct(
+        timestamp=timestamp_ms,
+        concentration_ppm=concentration,
+    )
+
+
+def windowed_readings(
+    readings: list[Reading], window_start_ms: int, window_end_ms: int
+) -> list[Reading]:
+    """Slice a series to the closed window [window_start_ms, window_end_ms].
+
+    A boundary landing exactly on a sample reuses that sample; otherwise a
+    virtual endpoint is interpolated from the two adjacent readings. Only
+    samples strictly inside the window are kept, so no timestamp appears
+    twice and interval merging is unaffected by the cut.
+    """
+    timestamps = [reading.timestamp for reading in readings]
+
+    start_successor = bisect_right(timestamps, window_start_ms)
+    if timestamps[start_successor - 1] == window_start_ms:
+        start_endpoint = readings[start_successor - 1]
+    else:
+        start_endpoint = _interpolated_reading(
+            readings[start_successor - 1],
+            readings[start_successor],
+            window_start_ms,
+        )
+
+    end_predecessor = bisect_left(timestamps, window_end_ms)
+    if timestamps[end_predecessor] == window_end_ms:
+        end_endpoint = readings[end_predecessor]
+    else:
+        end_endpoint = _interpolated_reading(
+            readings[end_predecessor - 1],
+            readings[end_predecessor],
+            window_end_ms,
+        )
+
+    interior = [
+        reading
+        for reading in readings
+        if window_start_ms < reading.timestamp < window_end_ms
+    ]
+    return [start_endpoint, *interior, end_endpoint]
+
+
+def calculate_window_exposure(
+    readings: list[Reading],
+    threshold_ppm: Decimal,
+    window_start_ms: int,
+    window_end_ms: int,
+) -> ExposureResult:
+    """Exposure intervals from the in-window readings and cut points only."""
+    return calculate_exposure(
+        windowed_readings(readings, window_start_ms, window_end_ms),
+        threshold_ppm,
+    )
+
+
+def verify_window_request(
+    request: WindowVerificationRequest,
+) -> tuple[ExposureResult, bool]:
+    result = calculate_window_exposure(
+        request.readings,
+        request.threshold_ppm,
+        request.window_start,
+        request.window_end,
+    )
     accepted = result.longest_duration_ms >= request.minimum_duration_ms
     return result, accepted
 
